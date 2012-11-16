@@ -2,9 +2,9 @@
 #include <string.h>
 #include <sys/time.h>
 #include <pthread.h>
-#include <oop.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <oop.h>
 
 #include "dyndict_manager.h"
 
@@ -14,6 +14,7 @@
 #define DD_DONE 0x4
 #define DD_FAIL 0x8
 #define DD_LOAD_FAIL 0x10
+#define DD_NEED_RELOAD 0x20
 
 #define DD_REF 'R'
 #define DD_UNREF 'U'
@@ -46,7 +47,7 @@ struct trival_queue_t
 
 void *tq_get(struct trival_queue_t *tq)
 {
-    if (num <= 0)
+    if (tq->num <= 0)
         return NULL;
 
     num--;
@@ -72,6 +73,7 @@ int tq_put(struct trival_queue_t *tq, void *d)
     return 0;
 }
 
+// 单向传递,dd/ddm -> oop
 struct info_queue_t
 {
     struct trival_queue_t tq;
@@ -95,9 +97,8 @@ struct dyndict_t
     pthread_rwlock_t rwlock;
     // 通知oop的dd的ref/unref操作
     // 队列为dict
-    int dd2oop[PIPE_NUM];
     struct info_queue_t iq;
-    // 通知ddm的dd首次加载完毕
+    // 通知ddm的dd首次加载完毕或卸载完毕
     int oop2dd[PIPE_NUM];
 
     // 下面的数据主要由oop操作
@@ -121,44 +122,16 @@ struct dd_manager_t
     uint64_t magic;
 };
 
-static void *check_dd(oop_source_t *oop, int fd, oop_event_t event, void *args)
-{
-    struct dyndict_t *dd = (struct dyndict_t *)args;
-    char msg;
-    read(fd, &msg, sizeof (char));
-
-    void *dict;
-    pthread_mutex_lock(&dd->iq..mutex);
-    dict = tq_get(&dd->iq.tq);
-    pthread_mutex_unlock(&dd->iq..mutex);
-
-    if (dict == NULL)
-        return OOP_CONTINUE;
-
-    int i;
-    for (i = 0; i < MAX_DICT_NUM; i++)
-    {
-        if (dict == dd->dicts[i])
-        {
-            if (msg == DD_REF)
-                count[i]++;
-            else if (msg == DD_UNREF)
-                count[i]--;
-            break;
-        }
-    }
-
-    return OOP_CONTINUE;
-}
-
 static int load_dd(oop_source_t *oop, struct dyndict_t *dd, int next)
 {
+    int ret = 0;
     if (dd->dicts[next] != NULL && dd->fini_fun != NULL)
         dd->fini_fun(dd->dict[next]);
     dd->dicts[next] = dd->ini_fun(dd->ini_args);
     if (dd->dicts[next] == NULL)
     {
         dd->stat |= DD_LOAD_FAIL;
+        ret = -1;
         goto LB_DONE;
     }
 
@@ -174,19 +147,64 @@ LB_DONE:
     dd->reload_tv.tv_sec += dd->intval_s;
     oop_add_time(oop, dd->reload_tv, reload, dd);
 
+    return ret;
+}
+
+static int check_if_reload(oop_source_t *oop, struct dyndict_t *dd, int pos)
+{
+    if (dd->stat & DD_NEED_RELOAD)
+    {
+        if (load_dd(oop, dd, pos) == 0)
+            dd->stat &= ~DD_NEED_RELOAD;
+    }
+
     return 0;
 }
 
+// 应该需要触发条件吧?
+// reload需要count降为0
+static void *check_dd(oop_source_t *oop, int fd, oop_event_t event, void *args)
+{
+    struct dyndict_t *dd = (struct dyndict_t *)args;
+    char msg;
+    read(fd, &msg, sizeof (char));
+
+    void *dict;
+    pthread_mutex_lock(&dd->iq.mutex);
+    dict = tq_get(&dd->iq.tq);
+    pthread_mutex_unlock(&dd->iq.mutex);
+
+    if (dict == NULL)
+        return OOP_CONTINUE;
+
+    int i;
+    for (i = 0; i < MAX_DICT_NUM; i++)
+    {
+        if (dict == dd->dicts[i])
+        {
+            if (msg == DD_REF)
+                count[i]++;
+            else if (msg == DD_UNREF)
+            {
+                count[i]--;
+                if (count[i] == 0)
+                    check_if_reload(oop, dd, i);
+            }
+            break;
+        }
+    }
+
+    return OOP_CONTINUE;
+}
+
+
 static int find_next_dict(struct dyndict_t *dd)
 {
-    int count = 0;
-    int next = dd->index;
-    while (count < MAX_DICT_NUM && dd->count[next] > 0)
-    {
+    int next = (dd->index + 1) % MAX_DICT_NUM;
+    while (next != dd->index && dd->count[next] > 0)
         next = (next + 1) % MAX_DICT_NUM;
-        count++;
-    }
-    if (count >= MAX_DICT_NUM)
+
+    if (next == dd->index)
         return -1;
     else
         return next;
@@ -199,11 +217,20 @@ static void *reload(oop_source_t *oop, struct timeval tv, void *args)
 {
     struct dyndict_t *dd = (struct dyndict_t *)args;
 
+    if (dd->stat & DD_ADD)
+    {
+        load_dd(oop, dd, 0);
+        return OOP_CONTINUE;
+    }
+
     // 当前使用index,不使用next
     // 所以无需担心同步问题
     int next = find_next_dict(dd);
     if (next == -1)
+    {
+        dd->stat |= DD_NEED_RELOAD;
         return OOP_CONTINUE;
+    }
 
     load_dd(oop, dd, next);
 
@@ -216,7 +243,7 @@ static int add_dd(oop_source_t *oop, struct dyndict_t *dd)
     memset(dd->dicts, 0, sizeof (MAX_DICT_NUM * sizeof (void *)));
     memset(dd->count, 0, sizeof (MAX_DICT_NUM * sizeof (int)));
 
-    oop_add_fd(oop, dd->dd2oop[OOP_READ], OOP_READ, check_dd, dd);
+    oop_add_fd(oop, dd->iq.pipefd[OOP_READ], OOP_READ, check_dd, dd);
     gettimeofday(&dd->reload_tv, NULL);
     oop_add_time(oop, dd->reload_tv, reload, dd);
 
@@ -244,7 +271,7 @@ static int del_dd(oop_source_t *oop, struct dyndict_t *dd)
 
     if (over == 1)
     {
-        write(dd->oop2dd, CMD_DD, sizeof (char));
+        write(dd->oop2dd[PIPE_WRITE], CMD_DD, sizeof (char));
         return -1;
     }
 
@@ -339,6 +366,9 @@ void ddm_fini(struct dd_manager_t *ddm);
 
 // load dict: dict = ini_fun(ini_filename);
 // rem  dict: fini(dict);
+
+// add:
+//
 int ddm_add(struct dd_manager_t *ddm, const char *name, void *(*ini_fun)(void *), void *ini_args, void (*fini_fun)(void *));
 int ddm_del(struct dd_manager_t *ddm, const char *name);
 

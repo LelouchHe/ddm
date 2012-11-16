@@ -6,7 +6,7 @@ OBJS = $(SRC:%.c=%.o)
 CC = gcc
 
 CFLAGS = -g -Wall
-INCLUDE =
+INCLUDE = -I.
 LDFLAGS =
 
 all: $(EXE)

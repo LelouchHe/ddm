@@ -15,7 +15,7 @@ void *ini(const char *name)
     return buf;
 }
 
-int fini(void *some)
+void fini(void *some)
 {
     printf("unload me\n");
     return 0;
@@ -25,14 +25,14 @@ int main()
 {
     struct dd_manager_t *ddm = ddm_ini(100);
 
-    ddm_add(ddm, "test", ini, "some", fini);
+    ddm_add(ddm, "test", 10, ini, "some", fini);
 
     const char *dict = (const char *)ddm_get(ddm, "test");
     printf("%s\n", dict);
 
     getchar();
 
-    dict = (const char *)ddm_get(ddm, "test");
+    dict = (const char *)ddm_ref(ddm, "test");
     printf("%s\n", dict);
 
     ddm_fini(ddm);
