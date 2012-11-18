@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -21,7 +22,8 @@ void *ini(void *args)
     char *name = (char *)args;
 
     FILE *file = fopen(name, "r");
-    fgets(d->str, 1024 - 1, file);
+    fgets(d->str, MAX_BUF_SIZE, file);
+    d->str[strlen(d->str) - 1] = '\0';
     fclose(file);
 
     return d;
