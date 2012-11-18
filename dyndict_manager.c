@@ -140,7 +140,7 @@ static int load_dd(oop_source_t *oop, struct dyndict_t *dd, int next)
     pthread_rwlock_unlock(&dd->rwlock);
 
 LB_DONE:
-    if (dd->stat & DD_ADD)
+    if (dd->stat & DD_ADD || dd->stat & DD_DEL)
         write(dd->oop2dd[PIPE_WRITE], CMD_DD, sizeof (char));
 
     gettimeofday(&dd->reload_tv, NULL);
@@ -362,17 +362,61 @@ struct dd_manager_t *ddm_ini(int max_num)
     return ddm;
 }
 
-void ddm_fini(struct dd_manager_t *ddm);
+void ddm_fini(struct dd_manager_t *ddm)
+{
+    if (ddm == NULL)
+        return;
+
+    pthread_rwlock_wrlock(&ddm->rwlock);
+
+    ddm->magic = DDM_DEAD;
+
+    int i;
+    int check_num;
+    for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
+    {
+        struct dyndict_t *dd = &ddm->dds[i];
+        if (dd->stat != DD_EMPTY)
+        {}
+    }
+
+    pthread_rwlock_unlock(&ddm->rwlock);
+
+    pthread_rwlock_destroy(&ddm->rwlock);
+    free(ddm);
+}
 
 // load dict: dict = ini_fun(ini_filename);
 // rem  dict: fini(dict);
 
 // add:
 //
-int ddm_add(struct dd_manager_t *ddm, const char *name, void *(*ini_fun)(void *), void *ini_args, void (*fini_fun)(void *));
-int ddm_del(struct dd_manager_t *ddm, const char *name);
+int ddm_add(struct dd_manager_t *ddm, const char *name, int intval_s, void *(*ini_fun)(void *), void *ini_args, void (*fini_fun)(void *))
+{
+    if (ddm == NULL || ddm->magic != DDM_ALIVE)
+        return DDM_MEM;
 
-void *ddm_get(struct dd_manager_t *ddm, const char *name);
+    pthread_rwlock_wrlock(&ddm->rwlock);
+
+    if (ddm->magic != DDM_ALIVE)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return DDM_MEM;
+    }
+
+    pthread_rwlock_unlock(&ddm->rwlock);
+
+}
+
+int ddm_del(struct dd_manager_t *ddm, const char *name)
+{}
+
+
+void *ddm_ref(struct dd_manager_t *ddm, const char *name)
+{}
+
+int ddm_unref(struct dd_manager_t *ddm, const char *name, void *dict)
+{}
 
 
 
