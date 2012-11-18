@@ -9,11 +9,13 @@
 
 #include "dyndict_manager.h"
 
+#define DD_STAT 0xF
 #define DD_EMPTY 0x0
 #define DD_ADD 0x1
 #define DD_DEL 0x2
 #define DD_DONE 0x4
 #define DD_FAIL 0x8
+
 #define DD_LOAD_FAIL 0x10
 #define DD_NEED_RELOAD 0x20
 
@@ -196,7 +198,7 @@ static int check(oop_source_t *oop, struct dyndict_t *dd, int pos)
         if (load_dd(oop, dd, pos) == 0)
             dd->stat &= ~DD_NEED_RELOAD;
     }
-    else if (dd->stat & DD_DEL)
+    else if ((dd->stat & DD_STAT) == DD_DEL)
         del_dd(oop, dd);
 
     return 0;
@@ -388,7 +390,7 @@ void ddm_fini(struct dd_manager_t *ddm)
         dd = &ddm->dds[i];
         // dd->stat == DD_DONE || DD_EMPTY only
         // or it won't release the lock to let us in
-        if (dd->stat == DD_DONE)
+        if ((dd->stat & DD_STAT) == DD_DONE)
         {
             check_num++;
 
@@ -405,6 +407,8 @@ void ddm_fini(struct dd_manager_t *ddm)
 
     // CMD_EXIT is not CMD_DD
     // CMD_DD used in ddm_del, since we need to delete all dict
+    // not care about dd->oop2dd, since we just close them
+    // might cause a problem when it blocks
     pthread_mutex_lock(&ddm->iq.mutex);
     msg = CMD_EXIT;
     write(ddm->iq.pipefd[PIPE_WRITE], &msg, sizeof (char));
@@ -412,10 +416,25 @@ void ddm_fini(struct dd_manager_t *ddm)
 
     pthread_rwlock_unlock(&ddm->rwlock);
 
-
     // just wait for oop_thread exit
     // can't lock since unref might use ddm->rwlock
     pthread_join(ddm->oop_pid, NULL);
+    for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
+    {
+        dd = &ddm->dds[i];
+        if ((dd->stat & DD_STAT) == DD_DEL)
+        {
+            check_num++;
+
+            close(dd->oop2dd[PIPE_READ]);
+            close(dd->oop2dd[PIPE_WRITE]);
+            pthread_rwlock_destroy(&dd->rwlock);
+
+            close(dd->iq.pipefd[PIPE_READ]);
+            close(dd->iq.pipefd[PIPE_WRITE]);
+            pthread_mutex_destroy(&dd->iq.mutex);
+        }
+    }
 
     pthread_rwlock_destroy(&ddm->rwlock);
     ddm->magic = DDM_DEAD;
@@ -455,7 +474,7 @@ int ddm_add(struct dd_manager_t *ddm, const char *name, int intval_s, void *(*in
         struct dyndict_t *dd = &ddm->dds[i];
         if (dd->stat == DD_EMPTY && target == NULL)
             target = dd;
-        else if (dd->stat == DD_DONE)
+        else if ((dd->stat & DD_STAT) == DD_DONE)
         {
             check_num++;
             if (strcmp(dd->name, name) == 0)
@@ -541,9 +560,6 @@ static int del_dd_from_ddm(struct dd_manager_t *ddm, struct dyndict_t *dd)
     pthread_mutex_destroy(&dd->iq.mutex);
     close(dd->iq.pipefd[PIPE_READ]);
     close(dd->iq.pipefd[PIPE_WRITE]);
-
-    dd->stat = DD_EMPTY;
-
     return 0;
 }
 
@@ -590,6 +606,8 @@ int ddm_del(struct dd_manager_t *ddm, const char *name)
 
     del_dd_from_ddm(ddm, dd);
 
+    dd->stat = DD_EMPTY;
+
     return DDM_OK;
 }
 
@@ -619,7 +637,7 @@ void *ddm_ref(struct dd_manager_t *ddm, const char *name)
     for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
     {
         dd = &ddm->dds[i];
-        if (dd->stat == DD_DONE)
+        if ((dd->stat & DD_STAT) == DD_DONE)
         {
             check_num++;
             if (strcmp(dd->name, name) == 0)
@@ -678,7 +696,8 @@ int ddm_unref(struct dd_manager_t *ddm, const char *name, void *dict)
     for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
     {
         dd = &ddm->dds[i];
-        if (dd->stat == DD_DONE)
+        int stat = dd->stat & DD_STAT;
+        if (stat == DD_DONE || (stat == DD_DEL && ddm->magic == DDM_FINI))
         {
             check_num++;
             if (strcmp(dd->name, name) == 0)

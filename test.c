@@ -24,6 +24,7 @@ void *ini(void *args)
     FILE *file = fopen(name, "r");
     fgets(d->str, MAX_BUF_SIZE, file);
     d->str[strlen(d->str) - 1] = '\0';
+    printf("in ini\t%s\n", d->str);
     fclose(file);
 
     return d;
@@ -44,8 +45,8 @@ void *another_thread(void *args)
     {
         struct dict_t *d = ddm_ref(ddm, "test");
         printf("%s\n", d->str);
-        ddm_unref(ddm, "test", d);
         sleep(1);
+        ddm_unref(ddm, "test", d);
     }
 
     return NULL;
@@ -64,10 +65,12 @@ int main()
     {
         struct dict_t *d = ddm_ref(ddm, "test");
         printf("%s\n", d->str);
+        sleep(1);
         ddm_unref(ddm, "test", d);
-        sleep(2);
     }
 
+    printf("before ddm_fini\n");
     ddm_fini(ddm);
+    printf("after ddm_fini\n");
     return 0;
 }
