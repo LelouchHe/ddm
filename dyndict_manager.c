@@ -488,7 +488,6 @@ int ddm_add(struct dd_manager_t *ddm, const char *name, int intval_s, void *(*in
     if (target == NULL)
         target = &ddm->dds[check_num];
 
-
     ddm->num++;
     target->stat = DD_ADD;
 
@@ -584,18 +583,22 @@ int ddm_del(struct dd_manager_t *ddm, const char *name)
     int i;
     int check_num;
     struct dyndict_t *dd = NULL;
+    int found = 0;
     for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
     {
         dd = &ddm->dds[i];
-        if (dd->stat == DD_DONE)
+        if ((dd->stat & DD_STAT) == DD_DONE)
         {
             check_num++;
             if (strcmp(dd->name, name) == 0)
+            {
+                found = 1;
                 break;
+            }
         }
     }
 
-    if (i < ddm->max && check_num < ddm->num)
+    if (found == 0)
     {
         pthread_rwlock_unlock(&ddm->rwlock);
         return DDM_NODICT;
@@ -634,6 +637,7 @@ void *ddm_ref(struct dd_manager_t *ddm, const char *name)
     int i;
     int check_num;
     struct dyndict_t *dd = NULL;
+    int found = 0;
     for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
     {
         dd = &ddm->dds[i];
@@ -641,11 +645,14 @@ void *ddm_ref(struct dd_manager_t *ddm, const char *name)
         {
             check_num++;
             if (strcmp(dd->name, name) == 0)
+            {
+                found = 1;
                 break;
+            }
         }
     }
 
-    if (i < ddm->max && check_num < ddm->num)
+    if (found == 0)
     {
         pthread_rwlock_unlock(&ddm->rwlock);
         return NULL;
@@ -693,6 +700,7 @@ int ddm_unref(struct dd_manager_t *ddm, const char *name, void *dict)
     int i;
     int check_num;
     struct dyndict_t *dd = NULL;
+    int found = 0;
     for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
     {
         dd = &ddm->dds[i];
@@ -701,11 +709,14 @@ int ddm_unref(struct dd_manager_t *ddm, const char *name, void *dict)
         {
             check_num++;
             if (strcmp(dd->name, name) == 0)
+            {
+                found = 1;
                 break;
+            }
         }
     }
 
-    if (i < ddm->max && check_num < ddm->num)
+    if (found == 0)
     {
         pthread_rwlock_unlock(&ddm->rwlock);
         return DDM_NODICT;

@@ -45,7 +45,7 @@ void *another_thread(void *args)
     {
         struct dict_t *d = ddm_ref(ddm, "test");
         printf("%s\n", d->str);
-        sleep(1);
+        sleep(5);
         ddm_unref(ddm, "test", d);
     }
 
@@ -57,6 +57,7 @@ int main()
     struct dd_manager_t *ddm = ddm_ini(100);
 
     ddm_add(ddm, "test", 1, ini, "sample.dict", fini);
+    ddm_add(ddm, "test2", 1, ini, "sample.dict", fini);
 
     pthread_t pid;
     pthread_create(&pid, NULL, another_thread, ddm);
@@ -65,7 +66,7 @@ int main()
     {
         struct dict_t *d = ddm_ref(ddm, "test");
         printf("%s\n", d->str);
-        sleep(1);
+        sleep(2);
         ddm_unref(ddm, "test", d);
     }
 
