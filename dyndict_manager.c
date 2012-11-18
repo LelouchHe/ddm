@@ -724,24 +724,3 @@ int ddm_unref(struct dd_manager_t *ddm, const char *name, void *dict)
     return DDM_OK;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
