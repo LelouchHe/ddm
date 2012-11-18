@@ -7,7 +7,7 @@ CC = gcc
 
 CFLAGS = -g -Wall
 INCLUDE = -I.
-LDFLAGS =
+LDFLAGS = -lpthread
 
 all: $(EXE)
 

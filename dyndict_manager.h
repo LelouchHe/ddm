@@ -7,10 +7,11 @@ extern "C" {
 
 #define DDM_OK 0
 #define DDM_MEM -1
-#define DDM_OVERFLOW -2
-#define DDM_DUP -3
-#define DDM_UNIMPLEMENTED -4
-#define DDM_UNKNOWN -5
+#define DDM_NODICT -2
+#define DDM_OVERFLOW -3
+#define DDM_DUP -4
+#define DDM_UNIMPLEMENTED -5
+#define DDM_UNKNOWN -6
 
 struct dd_manager_t;
 
@@ -20,7 +21,7 @@ void ddm_fini(struct dd_manager_t *ddm);
 // load dict: dict = ini_fun(ini_filename);
 // rem  dict: fini(dict);
 // 必须等待对应dd加载成功才返回(oop2dd)
-int ddm_add(struct dd_manager_t *ddm, const char *name, void *(*ini_fun)(void *), void *ini_args, void (*fini_fun)(void *));
+int ddm_add(struct dd_manager_t *ddm, const char *name, int intval_s, void *(*ini_fun)(void *), void *ini_args, void (*fini_fun)(void *));
 // 必须等待对应dd删除成功才返回(oop2dd)
 int ddm_del(struct dd_manager_t *ddm, const char *name);
 

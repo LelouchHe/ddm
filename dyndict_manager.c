@@ -1,8 +1,9 @@
 #include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
-#include <pthread.h>
 #include <stdint.h>
+#include <pthread.h>
+#include <sys/time.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <oop.h>
 
@@ -19,8 +20,9 @@
 #define DD_REF 'R'
 #define DD_UNREF 'U'
 
-#define DDM_ALIVE 
-#define DDM_DEAD
+#define DDM_LIVE 0x4C495645 /* "LIVE" */
+#define DDM_FINI 0x46494E49 /* "FINI" */
+#define DDM_DEAD 0x44454144 /* "DEAD" */
 
 #define MAX_QUEUE_SIZE 1024
 #define MAX_DICT_NUM 2
@@ -50,7 +52,7 @@ void *tq_get(struct trival_queue_t *tq)
     if (tq->num <= 0)
         return NULL;
 
-    num--;
+    tq->num--;
     void *ret = tq->data[tq->head];
     tq->head++;
     if (tq->head >= MAX_QUEUE_SIZE)
@@ -61,10 +63,10 @@ void *tq_get(struct trival_queue_t *tq)
 
 int tq_put(struct trival_queue_t *tq, void *d)
 {
-    if (num > MAX_QUEUE_SIZE)
+    if (tq->num > MAX_QUEUE_SIZE)
         return -1;
 
-    num++; 
+    tq->num++; 
     tq->data[tq->tail] = d;
     tq->tail++;
     if (tq->tail >= MAX_QUEUE_SIZE)
@@ -95,11 +97,11 @@ struct dyndict_t
     // 初始化由ddm,操作改变由oop
     int intval_s;
     pthread_rwlock_t rwlock;
+    // 通知ddm的dd首次加载完毕或卸载完毕
+    int oop2dd[PIPE_NUM];
     // 通知oop的dd的ref/unref操作
     // 队列为dict
     struct info_queue_t iq;
-    // 通知ddm的dd首次加载完毕或卸载完毕
-    int oop2dd[PIPE_NUM];
 
     // 下面的数据主要由oop操作
     struct timeval reload_tv;
@@ -116,17 +118,20 @@ struct dd_manager_t
 
     pthread_rwlock_t rwlock;
 
+    // need to be nonblock 
     struct info_queue_t iq;
     pthread_t oop_pid;
 
-    uint64_t magic;
+    uint32_t magic;
 };
+
+static void *reload(oop_source_t *oop, struct timeval tv, void *args);
 
 static int load_dd(oop_source_t *oop, struct dyndict_t *dd, int next)
 {
     int ret = 0;
     if (dd->dicts[next] != NULL && dd->fini_fun != NULL)
-        dd->fini_fun(dd->dict[next]);
+        dd->fini_fun(dd->dicts[next]);
     dd->dicts[next] = dd->ini_fun(dd->ini_args);
     if (dd->dicts[next] == NULL)
     {
@@ -140,8 +145,11 @@ static int load_dd(oop_source_t *oop, struct dyndict_t *dd, int next)
     pthread_rwlock_unlock(&dd->rwlock);
 
 LB_DONE:
-    if (dd->stat & DD_ADD || dd->stat & DD_DEL)
-        write(dd->oop2dd[PIPE_WRITE], CMD_DD, sizeof (char));
+    if (dd->stat & DD_ADD)
+    {
+        char msg = CMD_DD;
+        write(dd->oop2dd[PIPE_WRITE], &msg, sizeof (char));
+    }
 
     gettimeofday(&dd->reload_tv, NULL);
     dd->reload_tv.tv_sec += dd->intval_s;
@@ -150,13 +158,46 @@ LB_DONE:
     return ret;
 }
 
-static int check_if_reload(oop_source_t *oop, struct dyndict_t *dd, int pos)
+static int del_dd(oop_source_t *oop, struct dyndict_t *dd)
+{
+    oop_remove_time(oop, dd->reload_tv, reload, dd);
+    int i;
+    int over = 1;
+    for (i = 0; i < MAX_DICT_NUM; i++)
+    {
+        if (dd->dicts[i] != NULL)
+        {
+            if (dd->count[i] > 0)
+                over = 0;
+            else if (dd->fini_fun != NULL)
+            {
+                dd->fini_fun(dd->dicts[i]);
+                dd->dicts[i] = NULL;
+            }
+        }
+    }
+
+    if (over == 1)
+    {
+        oop_remove_fd(oop, dd->iq.pipefd[PIPE_READ], OOP_READ);
+        char msg = CMD_DD;
+        write(dd->oop2dd[PIPE_WRITE], &msg, sizeof (char));
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static int check(oop_source_t *oop, struct dyndict_t *dd, int pos)
 {
     if (dd->stat & DD_NEED_RELOAD)
     {
         if (load_dd(oop, dd, pos) == 0)
             dd->stat &= ~DD_NEED_RELOAD;
     }
+    else if (dd->stat & DD_DEL)
+        del_dd(oop, dd);
 
     return 0;
 }
@@ -183,12 +224,12 @@ static void *check_dd(oop_source_t *oop, int fd, oop_event_t event, void *args)
         if (dict == dd->dicts[i])
         {
             if (msg == DD_REF)
-                count[i]++;
+                dd->count[i]++;
             else if (msg == DD_UNREF)
             {
-                count[i]--;
-                if (count[i] == 0)
-                    check_if_reload(oop, dd, i);
+                dd->count[i]--;
+                if (dd->count[i] == 0)
+                    check(oop, dd, i);
             }
             break;
         }
@@ -250,43 +291,6 @@ static int add_dd(oop_source_t *oop, struct dyndict_t *dd)
     return 0;
 }
 
-static int del_dd(oop_source_t *oop, struct dyndict_t *dd)
-{
-    oop_remove_time(oop, dd->reload_tv, reload, dd);
-    int i;
-    int over = 1;
-    for (i = 0; i < MAX_DICT_NUM; i++)
-    {
-        if (dd->dicts[i] != NULL)
-        {
-            if (dd->count[i] > 0)
-                over = 0;
-            else if (dd->fini_fun != NULL)
-            {
-                dd->fini_fun(dd->dicts[i]);
-                dd->dicts[i] = NULL;
-            }
-        }
-    }
-
-    if (over == 1)
-    {
-        write(dd->oop2dd[PIPE_WRITE], CMD_DD, sizeof (char));
-        return -1;
-    }
-
-    return 0;
-}
-
-static int remove_time(oop_source_t *oop, struct trival_queue_t *tq)
-{
-    struct dyndict_t *dd;
-    while ((dd = (struct dyndict_t *)tq_get(tq)) != NULL)
-        del_dd(oop, dd);
-
-    return 0;
-}
-
 static void *in_notify(oop_source_t *oop, int fd, oop_event_t event, void *args)
 {
     char msg;
@@ -298,7 +302,6 @@ static void *in_notify(oop_source_t *oop, int fd, oop_event_t event, void *args)
     {
         if (msg == CMD_EXIT)
         {
-            remove_time(oop, &iq->tq);
             oop_remove_fd(oop, fd, OOP_READ);
             break;
         }
@@ -338,7 +341,7 @@ struct dd_manager_t *ddm_ini(int max_num)
         return NULL;
 
     if (max_num <= 0)
-        max_num = DEF_DICT_NUM;
+        max_num = DEF_DD_NUM;
     ddm->dds = (struct dyndict_t *)malloc(max_num * sizeof (struct dyndict_t));
     if (ddm->dds == NULL)
     {
@@ -351,17 +354,22 @@ struct dd_manager_t *ddm_ini(int max_num)
 
     pthread_rwlock_init(&ddm->rwlock, NULL);
 
-    struct trival_queue_t *tq = ddm->iq.tq;
+    struct trival_queue_t *tq = &ddm->iq.tq;
     tq->head = tq->tail = 0;
     tq->num = 0;
     pthread_mutex_init(&ddm->iq.mutex, NULL);
-    pipe2(ddm->iq.pipefd, O_NONBLOCK); 
+    pipe(ddm->iq.pipefd); 
+    fcntl(ddm->iq.pipefd[PIPE_READ], F_SETFL, O_NONBLOCK);
+    fcntl(ddm->iq.pipefd[PIPE_WRITE], F_SETFL, O_NONBLOCK);
 
     pthread_create(&ddm->oop_pid, NULL, oop_thread, &ddm->iq);
+
+    ddm->magic = DDM_LIVE;
 
     return ddm;
 }
 
+// block until del complete
 void ddm_fini(struct dd_manager_t *ddm)
 {
     if (ddm == NULL)
@@ -369,20 +377,48 @@ void ddm_fini(struct dd_manager_t *ddm)
 
     pthread_rwlock_wrlock(&ddm->rwlock);
 
-    ddm->magic = DDM_DEAD;
+    ddm->magic = DDM_FINI;
 
     int i;
     int check_num;
+    struct dyndict_t *dd = NULL;
+    char msg;
     for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
     {
-        struct dyndict_t *dd = &ddm->dds[i];
-        if (dd->stat != DD_EMPTY)
-        {}
+        dd = &ddm->dds[i];
+        // dd->stat == DD_DONE || DD_EMPTY only
+        // or it won't release the lock to let us in
+        if (dd->stat == DD_DONE)
+        {
+            check_num++;
+
+            dd->stat = DD_DEL;
+            pthread_mutex_lock(&ddm->iq.mutex);
+
+            tq_put(&ddm->iq.tq, dd);
+            msg = CMD_DD;
+            write(ddm->iq.pipefd[PIPE_WRITE], &msg, sizeof (char));
+
+            pthread_mutex_unlock(&ddm->iq.mutex);
+        }
     }
+
+    // CMD_EXIT is not CMD_DD
+    // CMD_DD used in ddm_del, since we need to delete all dict
+    pthread_mutex_lock(&ddm->iq.mutex);
+    msg = CMD_EXIT;
+    write(ddm->iq.pipefd[PIPE_WRITE], &msg, sizeof (char));
+    pthread_mutex_unlock(&ddm->iq.mutex);
 
     pthread_rwlock_unlock(&ddm->rwlock);
 
+
+    // just wait for oop_thread exit
+    // can't lock since unref might use ddm->rwlock
+    pthread_join(ddm->oop_pid, NULL);
+
     pthread_rwlock_destroy(&ddm->rwlock);
+    ddm->magic = DDM_DEAD;
     free(ddm);
 }
 
@@ -390,33 +426,284 @@ void ddm_fini(struct dd_manager_t *ddm)
 // rem  dict: fini(dict);
 
 // add:
-//
+// block until add is DD_DONE of DD_FAIL
+// dict map to uniq slot in dds
 int ddm_add(struct dd_manager_t *ddm, const char *name, int intval_s, void *(*ini_fun)(void *), void *ini_args, void (*fini_fun)(void *))
 {
-    if (ddm == NULL || ddm->magic != DDM_ALIVE)
+    if (ddm == NULL || ddm->magic != DDM_LIVE)
         return DDM_MEM;
 
     pthread_rwlock_wrlock(&ddm->rwlock);
 
-    if (ddm->magic != DDM_ALIVE)
+    if (ddm->magic != DDM_LIVE)
     {
         pthread_rwlock_unlock(&ddm->rwlock);
         return DDM_MEM;
     }
 
+    if (ddm->num == ddm->max)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return DDM_OVERFLOW;
+    }
+
+    int i;
+    int check_num;
+    struct dyndict_t *target = NULL;
+    for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
+    {
+        struct dyndict_t *dd = &ddm->dds[i];
+        if (dd->stat == DD_EMPTY && target == NULL)
+            target = dd;
+        else if (dd->stat == DD_DONE)
+        {
+            check_num++;
+            if (strcmp(dd->name, name) == 0)
+            {
+                pthread_rwlock_unlock(&ddm->rwlock);
+                return DDM_DUP;
+            }
+        }
+    }
+
+    if (target == NULL)
+        target = &ddm->dds[check_num];
+
+
+    ddm->num++;
+    target->stat = DD_ADD;
+
     pthread_rwlock_unlock(&ddm->rwlock);
 
+    target->name = name;
+    target->ini_fun = ini_fun;
+    target->ini_args = ini_args;
+    target->fini_fun = fini_fun;
+    target->intval_s = intval_s;
+
+    pipe(target->oop2dd);
+    pipe(target->iq.pipefd);
+
+    char msg;
+
+    pthread_mutex_lock(&ddm->iq.mutex);
+    tq_put(&ddm->iq.tq, target);
+    msg = CMD_DD;
+    write(ddm->iq.pipefd[PIPE_WRITE], &msg, sizeof (char));
+    pthread_mutex_unlock(&ddm->iq.mutex);
+
+    while (read(target->oop2dd[PIPE_READ], &msg, sizeof (char)))
+    {
+        if (msg == CMD_DD)
+            break;
+    }
+
+    if (target->stat & DD_LOAD_FAIL)
+    {
+        close(target->oop2dd[PIPE_READ]);
+        close(target->oop2dd[PIPE_WRITE]);
+        close(target->iq.pipefd[PIPE_READ]);
+        close(target->iq.pipefd[PIPE_WRITE]);
+        target->stat = DD_FAIL;
+        return DDM_MEM;
+    }
+    else
+    {
+        pthread_rwlock_init(&target->rwlock, NULL);
+        pthread_mutex_init(&target->iq.mutex, NULL);
+        target->iq.tq.head = target->iq.tq.tail = 0;
+        target->iq.tq.num = 0;
+        target->stat = DD_DONE;
+        return DDM_OK;
+    }
+}
+
+static int del_dd_from_ddm(struct dd_manager_t *ddm, struct dyndict_t *dd)
+{
+    char msg;
+    pthread_mutex_lock(&ddm->iq.mutex);
+
+    tq_put(&ddm->iq.tq, dd);
+    msg = CMD_DD;
+    write(ddm->iq.pipefd[PIPE_WRITE], &msg, sizeof (char));
+
+    pthread_mutex_unlock(&ddm->iq.mutex);
+
+    while (read(dd->oop2dd[PIPE_READ], &msg, sizeof (char)))
+    {
+        if (msg == CMD_DD)
+            break;
+    }
+
+    close(dd->oop2dd[PIPE_READ]);
+    close(dd->oop2dd[PIPE_WRITE]);
+    pthread_rwlock_destroy(&dd->rwlock);
+    pthread_mutex_destroy(&dd->iq.mutex);
+    close(dd->iq.pipefd[PIPE_READ]);
+    close(dd->iq.pipefd[PIPE_WRITE]);
+
+    dd->stat = DD_EMPTY;
+
+    return 0;
 }
 
 int ddm_del(struct dd_manager_t *ddm, const char *name)
-{}
+{
+    if (ddm == NULL || ddm->magic != DDM_LIVE)
+        return DDM_MEM;
+    pthread_rwlock_wrlock(&ddm->rwlock);
+
+    if (ddm->magic != DDM_LIVE)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return DDM_MEM;
+    }
+
+    if (ddm->num == 0)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return DDM_NODICT;
+    }
+
+    int i;
+    int check_num;
+    struct dyndict_t *dd = NULL;
+    for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
+    {
+        dd = &ddm->dds[i];
+        if (dd->stat == DD_DONE)
+        {
+            check_num++;
+            if (strcmp(dd->name, name) == 0)
+                break;
+        }
+    }
+
+    if (i < ddm->max && check_num < ddm->num)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return DDM_NODICT;
+    }
+
+    dd->stat = DD_DEL;
+    pthread_rwlock_unlock(&ddm->rwlock);
+
+    del_dd_from_ddm(ddm, dd);
+
+    return DDM_OK;
+}
 
 
 void *ddm_ref(struct dd_manager_t *ddm, const char *name)
-{}
+{
+    if (ddm == NULL || ddm->magic != DDM_LIVE)
+        return NULL;
 
+    pthread_rwlock_rdlock(&ddm->rwlock);
+
+    if (ddm->magic != DDM_LIVE)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return NULL;
+    }
+
+    if (ddm->num == 0)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return NULL;
+    }
+
+    int i;
+    int check_num;
+    struct dyndict_t *dd = NULL;
+    for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
+    {
+        dd = &ddm->dds[i];
+        if (dd->stat == DD_DONE)
+        {
+            check_num++;
+            if (strcmp(dd->name, name) == 0)
+                break;
+        }
+    }
+
+    if (i < ddm->max && check_num < ddm->num)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return NULL;
+    }
+
+    void *dict;
+    char msg;
+    pthread_rwlock_rdlock(&dd->rwlock);
+
+    dict = dd->dicts[dd->index];
+    pthread_mutex_lock(&dd->iq.mutex);
+    tq_put(&dd->iq.tq, dict);
+    msg = DD_REF;
+    write(dd->iq.pipefd[PIPE_WRITE], &msg, sizeof (char));
+    pthread_mutex_unlock(&dd->iq.mutex);
+
+    pthread_rwlock_unlock(&dd->rwlock);
+
+    pthread_rwlock_unlock(&ddm->rwlock);
+
+    return dict;
+}
+
+// unref 可以在DD_FINI下操作,因为fini需要unref来减少索引
+// 以便可以安全的删除词典索引
 int ddm_unref(struct dd_manager_t *ddm, const char *name, void *dict)
-{}
+{
+    if (ddm == NULL || ddm->magic == DDM_DEAD)
+        return DDM_MEM;
+
+    pthread_rwlock_rdlock(&ddm->rwlock);
+
+    if (ddm->magic == DDM_DEAD)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return DDM_MEM;
+    }
+
+    if (ddm->num == 0)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return DDM_NODICT;
+    }
+
+    int i;
+    int check_num;
+    struct dyndict_t *dd = NULL;
+    for (i = 0, check_num = 0; i < ddm->max && check_num < ddm->num; i++)
+    {
+        dd = &ddm->dds[i];
+        if (dd->stat == DD_DONE)
+        {
+            check_num++;
+            if (strcmp(dd->name, name) == 0)
+                break;
+        }
+    }
+
+    if (i < ddm->max && check_num < ddm->num)
+    {
+        pthread_rwlock_unlock(&ddm->rwlock);
+        return DDM_NODICT;
+    }
+
+    char msg;
+
+    pthread_mutex_lock(&dd->iq.mutex);
+    tq_put(&dd->iq.tq, dict);
+    msg = DD_UNREF;
+    write(dd->iq.pipefd[PIPE_WRITE], &msg, sizeof (char));
+    pthread_mutex_unlock(&dd->iq.mutex);
+
+    pthread_rwlock_unlock(&ddm->rwlock);
+
+    return DDM_OK;
+}
 
 
 

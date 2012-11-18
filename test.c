@@ -1,39 +1,70 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <pthread.h>
 
 #include "dyndict_manager.h"
 
-char buf[1024];
+#define MAX_BUF_SIZE 1024
 
-void *ini(const char *name)
+struct dict_t
+{
+    char str[MAX_BUF_SIZE];
+};
+
+void *ini(void *args)
 {
     printf("load me\n");
 
+    struct dict_t *d = (struct dict_t *)malloc(sizeof (struct dict_t));
+
+    char *name = (char *)args;
+
     FILE *file = fopen(name, "r");
-    fgets(buf, 1024 - 1, file);
+    fgets(d->str, 1024 - 1, file);
     fclose(file);
 
-    return buf;
+    return d;
 }
 
-void fini(void *some)
+void fini(void *args)
 {
     printf("unload me\n");
-    return 0;
+
+    struct dict_t *d = (struct dict_t *)args;
+    free(d);
+}
+
+void *another_thread(void *args)
+{
+    struct dd_manager_t *ddm = (struct dd_manager_t *)args;
+    while (1)
+    {
+        struct dict_t *d = ddm_ref(ddm, "test");
+        printf("%s\n", d->str);
+        ddm_unref(ddm, "test", d);
+        sleep(1);
+    }
+
+    return NULL;
 }
 
 int main()
 {
     struct dd_manager_t *ddm = ddm_ini(100);
 
-    ddm_add(ddm, "test", 10, ini, "some", fini);
+    ddm_add(ddm, "test", 1, ini, "sample.dict", fini);
 
-    const char *dict = (const char *)ddm_get(ddm, "test");
-    printf("%s\n", dict);
+    pthread_t pid;
+    pthread_create(&pid, NULL, another_thread, ddm);
 
-    getchar();
-
-    dict = (const char *)ddm_ref(ddm, "test");
-    printf("%s\n", dict);
+    while (1)
+    {
+        struct dict_t *d = ddm_ref(ddm, "test");
+        printf("%s\n", d->str);
+        ddm_unref(ddm, "test", d);
+        sleep(2);
+    }
 
     ddm_fini(ddm);
     return 0;
