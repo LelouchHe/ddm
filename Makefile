@@ -1,22 +1,34 @@
+TEST_EXE = test
+TEST_SRC = test.c
+TEST_OBJ = $(TEST_SRC:%.c=%.o)
 
-EXE = test
-SRC = $(wildcard *.c)
+SRC = $(subst test.c,,$(wildcard *.c))
 OBJS = $(SRC:%.c=%.o)
+LIB = libddm.a
 
-CC = gcc
+CC = gcc 
+AR = ar
 
 CFLAGS = -g -Wall
-INCLUDE = -I.
+INCLUDE = -I. 
 LDFLAGS = -lpthread
 
-all: $(EXE)
+.PHONY: all lib clean
+
+all: $(LIB) $(TEST_EXE)
 
 
-$(EXE): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+lib: $(LIB)
 
-.c.o:
-	$(CC) $(CFLAGS) $(INCLUDE) -c $^
+
+$(TEST_EXE): $(TEST_OBJ) $(LIB)
+    $(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(LIB): $(OBJS)
+    $(AR) rcv $@ $^
+
+%.o: %.c 
+    $(CC) $(CFLAGS) $(INCLUDE) -c $^
 
 clean:
-	rm -f $(EXE) $(OBJS)
+    rm -f $(LIB) $(OBJS) $(TEST_EXE) $(TEST_OBJ) 
