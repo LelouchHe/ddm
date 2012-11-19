@@ -9,7 +9,7 @@ LIB = libddm.a
 CC = gcc 
 AR = ar
 
-CFLAGS = -g -Wall
+CFLAGS = -g -Wall -fPIC
 INCLUDE = -I. 
 LDFLAGS = -lpthread
 
