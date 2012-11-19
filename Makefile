@@ -22,13 +22,14 @@ lib: $(LIB)
 
 
 $(TEST_EXE): $(TEST_OBJ) $(LIB)
-    $(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 $(LIB): $(OBJS)
-    $(AR) rcv $@ $^
+	$(AR) rcv $@ $^
 
-%.o: %.c 
-    $(CC) $(CFLAGS) $(INCLUDE) -c $^
+%.o: %.c
+	$(CC) $(CFLAGS) $(INCLUDE) -c $^
 
 clean:
-    rm -f $(LIB) $(OBJS) $(TEST_EXE) $(TEST_OBJ) 
+	rm -f $(LIB) $(OBJS) $(TEST_EXE) $(TEST_OBJ) 
+
