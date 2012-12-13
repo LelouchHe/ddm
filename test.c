@@ -15,8 +15,6 @@ struct dict_t
 
 void *ini(void *args)
 {
-    printf("load me\n");
-
     struct dict_t *d = (struct dict_t *)malloc(sizeof (struct dict_t));
 
     char *name = (char *)args;
@@ -24,7 +22,7 @@ void *ini(void *args)
     FILE *file = fopen(name, "r");
     fgets(d->str, MAX_BUF_SIZE, file);
     d->str[strlen(d->str) - 1] = '\0';
-    printf("in ini\t%s\n", d->str);
+//    printf("load ini\t%s\n", d->str);
     fclose(file);
 
     return d;
@@ -32,7 +30,7 @@ void *ini(void *args)
 
 void fini(void *args)
 {
-    printf("unload me\n");
+//    printf("unload me\n");
 
     struct dict_t *d = (struct dict_t *)args;
     free(d);
@@ -44,7 +42,7 @@ void *another_thread(void *args)
     while (1)
     {
         struct dict_t *d = ddm_ref(ddm, "test");
-        printf("%s\n", d->str);
+        printf("2 => %s\n", d->str);
         sleep(5);
         ddm_unref(ddm, "test", d);
     }
@@ -65,7 +63,7 @@ int main()
     while (1)
     {
         struct dict_t *d = ddm_ref(ddm, "test");
-        printf("%s\n", d->str);
+        printf("1 => %s\n", d->str);
         sleep(2);
         ddm_unref(ddm, "test", d);
     }

@@ -661,6 +661,7 @@ void *ddm_ref(struct dd_manager_t *ddm, const char *name)
     void *dict;
     char msg;
     pthread_rwlock_rdlock(&dd->rwlock);
+    pthread_rwlock_unlock(&ddm->rwlock);
 
     dict = dd->dicts[dd->index];
     pthread_mutex_lock(&dd->iq.mutex);
@@ -670,8 +671,6 @@ void *ddm_ref(struct dd_manager_t *ddm, const char *name)
     pthread_mutex_unlock(&dd->iq.mutex);
 
     pthread_rwlock_unlock(&dd->rwlock);
-
-    pthread_rwlock_unlock(&ddm->rwlock);
 
     return dict;
 }
@@ -723,14 +722,13 @@ int ddm_unref(struct dd_manager_t *ddm, const char *name, void *dict)
     }
 
     char msg;
+    pthread_rwlock_unlock(&ddm->rwlock);
 
     pthread_mutex_lock(&dd->iq.mutex);
     tq_put(&dd->iq.tq, dict);
     msg = DD_UNREF;
     write(dd->iq.pipefd[PIPE_WRITE], &msg, sizeof (char));
     pthread_mutex_unlock(&dd->iq.mutex);
-
-    pthread_rwlock_unlock(&ddm->rwlock);
 
     return DDM_OK;
 }
